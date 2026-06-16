@@ -147,6 +147,115 @@
         addAIBotButton();
     }
 
+    // Codeforces 题目页面植入 AI 按钮 (直接接入 Gemini)
+    if (location.hostname.includes('codeforces.com') && location.pathname.includes('/problem')) {
+        function addAIBotButtonCF() {
+            const titleNode = document.querySelector('.problem-statement .header .title');
+            if (!titleNode) { setTimeout(addAIBotButtonCF, 500); return; }
+            if (document.getElementById('ai-help-btn')) return;
+
+            const btn = document.createElement('a');
+            btn.id = 'ai-help-btn'; btn.href = 'javascript:void 0';
+            btn.style.cssText = 'margin-left:12px;color:#4f46e5;font-weight:bold;cursor:pointer;text-decoration:none;font-size:14px;display:inline-block;';
+            btn.innerHTML = '🤖 AI 教我';
+
+            btn.onclick = () => {
+                const text = document.querySelector('.problem-statement')?.innerText || '';
+                if (!text || text.length < 10) { alert('题目提取失败，请刷新重试'); return; }
+                GM_setValue(STORE_MD, text);
+                GM_setValue(STORE_PEND, true);
+                GM_setValue(STORE_AI_TYPE, 'gemini');
+                window.open('https://gemini.google.com/app', '_blank');
+            };
+            titleNode.appendChild(btn);
+        }
+        addAIBotButtonCF();
+    }
+
+    // AtCoder 题目页面植入 AI 按钮 (直接接入 Gemini)
+    if (location.hostname.includes('atcoder.jp') && location.pathname.includes('/tasks/')) {
+        function addAIBotButtonAT() {
+            const titleNode = document.querySelector('span.h2') || document.querySelector('.h2');
+            if (!titleNode) { setTimeout(addAIBotButtonAT, 500); return; }
+            if (document.getElementById('ai-help-btn')) return;
+
+            const btn = document.createElement('a');
+            btn.id = 'ai-help-btn'; btn.href = 'javascript:void 0';
+            btn.style.cssText = 'margin-left:12px;color:#4f46e5;font-weight:bold;cursor:pointer;text-decoration:none;font-size:16px;display:inline-block;vertical-align:middle;';
+            btn.innerHTML = '🤖 AI 教我';
+
+            btn.onclick = () => {
+                const text = document.querySelector('#task-statement')?.innerText || '';
+                if (!text || text.length < 10) { alert('题目提取失败，请刷新重试'); return; }
+                GM_setValue(STORE_MD, text);
+                GM_setValue(STORE_PEND, true);
+                GM_setValue(STORE_AI_TYPE, 'gemini');
+                window.open('https://gemini.google.com/app', '_blank');
+            };
+            titleNode.appendChild(btn);
+        }
+        addAIBotButtonAT();
+    }
+
+    // LeetCode 题目页面植入 AI 按钮 (直接接入 Gemini)
+    if (location.hostname.includes('leetcode.cn') && location.pathname.includes('/problems/')) {
+        function addAIBotButtonLC() {
+            const titleNode = document.querySelector('.text-title-large') || document.querySelector('h1');
+            if (!titleNode) { setTimeout(addAIBotButtonLC, 500); return; }
+            if (document.getElementById('ai-help-btn')) { setTimeout(addAIBotButtonLC, 2000); return; }
+
+            const btn = document.createElement('a');
+            btn.id = 'ai-help-btn'; btn.href = 'javascript:void 0';
+            btn.style.cssText = 'margin-left:12px;color:#4f46e5;font-weight:bold;cursor:pointer;text-decoration:none;font-size:16px;display:inline-block;vertical-align:middle;';
+            btn.innerHTML = '🤖 AI 教我';
+
+            btn.onclick = () => {
+                const titleText = titleNode?.innerText || '';
+                const descNode = document.querySelector('[data-track-load="description_content"]') || document.querySelector('div[class*="content"]') || document.querySelector('.elfjS');
+                const text = titleText + '\n\n' + (descNode?.innerText || window.location.href);
+                if (!text || text.length < 10) { alert('题目提取失败，请刷新重试'); return; }
+                GM_setValue(STORE_MD, text);
+                GM_setValue(STORE_PEND, true);
+                GM_setValue(STORE_AI_TYPE, 'gemini');
+                window.open('https://gemini.google.com/app', '_blank');
+            };
+            titleNode.appendChild(btn);
+            setTimeout(addAIBotButtonLC, 2000); // LC 是单页应用，需要周期检测保证切换题目时挂载
+        }
+        addAIBotButtonLC();
+    }
+
+    // UVA 题目页面植入 AI 按钮 (直接接入 Gemini)
+    if (location.hostname.includes('onlinejudge.org') && location.search.includes('show_problem')) {
+        function addAIBotButtonUVA() {
+            const titleNode = document.querySelector('h3') || document.querySelector('td.maincore h1') || document.querySelector('td.maincore');
+            if (!titleNode) { setTimeout(addAIBotButtonUVA, 500); return; }
+            if (document.getElementById('ai-help-btn')) return;
+
+            const btn = document.createElement('a');
+            btn.id = 'ai-help-btn'; btn.href = 'javascript:void 0';
+            btn.style.cssText = 'margin-left:12px;color:#4f46e5;font-weight:bold;cursor:pointer;text-decoration:none;font-size:16px;display:inline-block;background:rgba(255,255,255,0.8);padding:2px 8px;border-radius:4px;vertical-align:middle;';
+            btn.innerHTML = '🤖 AI 教我';
+
+            btn.onclick = () => {
+                let text = '';
+                const iframe = document.querySelector('iframe');
+                if (iframe) {
+                    try { text = iframe.contentDocument.body.innerText; } catch(e) {}
+                }
+                if (!text || text.trim().length < 10) {
+                    text = "题目链接: " + location.href + "\n" + (document.body.innerText.substring(0, 1000));
+                }
+                GM_setValue(STORE_MD, text);
+                GM_setValue(STORE_PEND, true);
+                GM_setValue(STORE_AI_TYPE, 'gemini');
+                window.open('https://gemini.google.com/app', '_blank');
+            };
+            titleNode.appendChild(btn);
+        }
+        addAIBotButtonUVA();
+    }
+
     // =================== 致境·OI 主体架构 ===================
     const SYNC_FREEZE_LIMIT = 3 * 60 * 1000;
     const AUTO_CHECK_LIMIT = 60 * 60 * 1000;
