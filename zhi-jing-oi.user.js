@@ -1,10 +1,10 @@
 // @updateURL https://raw.githubusercontent.com/yu-888-max/zhi-jing-oi/main/zhi-jing-oi.user.js
 // ==UserScript==
-// @name         致境·OI
+// @name         致境·OI (校园网安全版)
 // @namespace    http://yu666.luogu.goal
-// @version      4.3
-// @description  这就是 4.3，一个从古诗文筋骨里长出来的、真正高阶级的刷题伴侣。它不堆砌神兽，而是把垂天、倚天、钧衡、万象、崑冈、惊鸿这些刻在我们文化基因里的意象，锻造成了现代工程学的灵魂。
-// @author       yu_666
+// @version      4.3.1-safe
+// @description  安全版：已移除自动全网同步及后台请求，仅保留手动触发功能。适合校园网等安全敏感环境。
+// @author       yu_666 && Gemini && DeepSeek
 // @match        *://*.luogu.com.cn/*
 // @match        *://*.luogu.com/*
 // @match        *://*.codeforces.com/*
@@ -36,26 +36,24 @@
 (function() {
     'use strict';
 
-    // ===================== 洛谷标签 → 知乎搜索（直接使用标签文本） =====================
+    // ===================== 洛谷标签 → 知乎搜索 =====================
     if (location.hostname.includes('luogu.com.cn')) {
         document.addEventListener('click', function(e) {
             let target = e.target;
-            // 向上查找最近的 <a> 标签（防止点击到内部 span）
             while (target && target.tagName !== 'A') {
                 target = target.parentElement;
                 if (!target) return;
             }
-            // 判断是否为标签链接（例如 /problem/list?tag=xxx）
             if (target.tagName === 'A' && target.href && target.href.includes('/problem/list?tag=')) {
                 e.preventDefault();
                 e.stopPropagation();
                 const tagText = target.textContent.trim();
                 if (tagText) {
-                    // 直接用标签文本作为搜索词
-                    window.open(
-                        'https://www.zhihu.com/search?type=content&q=' + encodeURIComponent(tagText),
-                        '_blank'
-                    );
+                    const zhihuUrl = 'https://www.zhihu.com/search?type=content&q=' + encodeURIComponent(tagText);
+                    const newWin = window.open(zhihuUrl, '_blank');
+                    if (!newWin || newWin.closed || typeof newWin.closed === 'undefined') {
+                        location.href = zhihuUrl;
+                    }
                 }
             }
         });
@@ -162,8 +160,6 @@
                     navigator.clipboard.writeText = origWrite;
                     if (!captured || captured.trim().length < 10) { alert('复制失败，请手动复制后再尝试'); return; }
                     GM_setValue(STORE_MD, captured);
-
-                    // 无缝衔接切换至悬浮标内展开的 AI 老师选择器
                     transitionTo('ai');
                 }, 200);
             };
@@ -245,7 +241,7 @@
                 window.open('https://gemini.google.com/app', '_blank');
             };
             titleNode.appendChild(btn);
-            setTimeout(addAIBotButtonLC, 2000); // LC 是单页应用，需要周期检测保证切换题目时挂载
+            setTimeout(addAIBotButtonLC, 2000);
         }
         addAIBotButtonLC();
     }
@@ -281,9 +277,9 @@
         addAIBotButtonUVA();
     }
 
-    // =================== 致境·OI 主体架构 ===================
+    // =================== 致境·OI 主体架构 (安全版) ===================
+    // 保留同步逻辑定义，但不会自动触发，只由手动按钮调用
     const SYNC_FREEZE_LIMIT = 3 * 60 * 1000;
-    const AUTO_CHECK_LIMIT = 60 * 60 * 1000;
     const dbKey = 'zhi_jing_oi_data';
     const UI_PREFS_KEY = 'hm_ui_prefs';
 
@@ -393,6 +389,7 @@
     }
 
     async function startIncrementalTrace(dbKey, silent = false) {
+        // 手动同步逻辑完整保留，但启动时不再自动调用
         const bound = getBoundaries(), userData = GM_getValue(dbKey) || { weeklyGoal: 10, weeklySolvedPids: [] }, config = getConfig();
         if (!silent) {
             const lastManual = GM_getValue('last_manual_sync_ts', 0);
@@ -546,7 +543,8 @@
         .hm-ac-detail::-webkit-scrollbar-track { background: rgba(0,0,0,0.05); border-radius: 10px; }
         .hm-ac-detail::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.3); border-radius: 10px; }
         .hm-ac-card { display:flex; align-items:center; padding:6px 10px; margin-bottom:5px; background:rgba(255,255,255,0.2); border-radius:12px; gap:10px; font-size:13px; color:var(--hm-text); border:1px solid rgba(255,255,255,0.2); } .hm-ac-card a { color:var(--hm-blue); text-decoration:none; font-weight:700; }
-        #hm-welcome-overlay { position:fixed; inset:0; background:rgba(247,249,250,0.75); z-index:9999998; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; overflow:hidden; transition:opacity 0.8s; pointer-events:none; opacity:0; } #hm-welcome-overlay.show { opacity:1; pointer-events:auto; }
+        #hm-welcome-overlay, #hm-update-overlay { position:fixed; inset:0; background:rgba(247,249,250,0.75); z-index:10000000; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; overflow:hidden; transition:opacity 0.8s; pointer-events:none; opacity:0; }
+        #hm-welcome-overlay.show, #hm-update-overlay.show { opacity:1; pointer-events:auto; }
         .hm-orb { position:absolute; border-radius:50%; filter:blur(90px); background:radial-gradient(circle, var(--hm-blue), #66B1FF); opacity:0.15; z-index:-1; } .orb-1 { width:60vw; height:60vw; top:-15%; left:-10%; animation:hm-orb-move 30s infinite alternate ease-in-out; } .orb-2 { width:50vw; height:50vw; bottom:-10%; right:-5%; animation:hm-orb-move 35s infinite alternate-reverse ease-in-out; }
         @keyframes hm-orb-move { 0% { transform:translate(0,0) scale(1); } 100% { transform:translate(8%,5%) scale(1.15); } }
         @keyframes hm-popIn { 0% { transform: scale(0.5); opacity:0; } 100% { transform: scale(1); opacity:1; } }
@@ -715,6 +713,10 @@
             <div style="text-align:center;font-size:14px;font-weight:800;color:var(--hm-blue);margin:5px 0 15px;opacity:0.8;">${isScorePrimary?`共 AC ${curStats.count} 题`:`总得分 ${curStats.score.toFixed(1)}`}</div>
             <div style="display:flex;justify-content:center;gap:10px;font-size:13px;font-weight:800;opacity:0.6;">${config.lg?`<span>LG:${d.weeklySolvedPids?.length||0}</span>`:''}${config.cf?`<span>CF:${d.cfWeeklySolvedPids?.length||0}</span>`:''}${config.at?`<span>AT:${d.atWeeklySolvedPids?.length||0}</span>`:''}${config.lc?`<span>LC:${d.lcWeeklySolvedPids?.length||0}</span>`:''}${config.uva?`<span>UVA:${d.uvaWeeklySolvedPids?.length||0}</span>`:''}</div>
             <div class="hm-progress"><div class="hm-bar" style="width:${prog}%"></div></div>
+            <div id="hm-mood-card" style="margin:15px 0; padding:15px; background:rgba(255,255,255,0.15); border-radius:20px; text-align:center; border:1px solid var(--hm-border);">
+                <div id="hm-mood-emoji" style="font-size:32px;"></div>
+                <div id="hm-mood-text" class="hm-text-premium" style="font-size:15px; margin-top:5px;"></div>
+            </div>
             <div id="hm-quote" class="hm-text-premium" style="opacity:0.65;margin:15px 0;text-align:center;font-style:italic;font-size:14px;min-height:40px;${currentUIPrefs.hitokotoMode==='none'?'display:none':''}">正在感悟中...</div>
             ${(d.contestOnlyPids||[]).length>0?`<div style="font-size:13px;color:#c62828;background:rgba(255,235,235,0.7);padding:12px;border-radius:20px;margin-bottom:15px;text-align:center;">⚠️ ${d.contestOnlyPids.length} 题洛谷记录仅在比赛中，需在练习模式提交一次。</div>`:''}
             <button id="hm-toggle-detail" class="hm-glass-btn" style="width:100%; margin-bottom:10px;">📋 查看本周 AC 明细</button>
@@ -724,6 +726,33 @@
                 <button id="hm-set" class="hm-glass-btn" style="width:52px;display:flex;align-items:center;justify-content:center;">⚙️</button>
             </div>
         `;
+
+        const updateMood = () => {
+            const emojiEl = document.getElementById('hm-mood-emoji');
+            const textEl = document.getElementById('hm-mood-text');
+            if (!emojiEl || !textEl) return;
+            const progNum = parseFloat(prog);
+            let emoji = '', mainText = '';
+            if (progNum <= 0) {
+                emoji = '😴'; mainText = '新的一周，先好好休息也是英雄主义。';
+            } else if (progNum < 30) {
+                emoji = '🌱'; mainText = '破土时刻，每一步都算数。';
+            } else if (progNum < 70) {
+                emoji = '🔥'; mainText = '渐入佳境，你的专注正在发光。';
+            } else if (progNum < 100) {
+                emoji = '🚀'; mainText = '就差临门一脚，山顶的风在等你。';
+            } else {
+                emoji = '👑'; mainText = '你已完成本周征途！今晚加鸡腿。';
+            }
+            const ancientCheers = [
+                '行而不辍，未来可期。','日拱一卒，功不唐捐。','山不让尘，川不辞盈。',
+                '云程发轫，万里可期。','追光的人，终会光芒万丈。','青衿之志，履践致远。'
+            ];
+            const randomCheer = ancientCheers[Math.floor(Math.random() * ancientCheers.length)];
+            emojiEl.textContent = emoji;
+            textEl.innerHTML = `${mainText}<br><span style="font-size:13px; opacity:0.7;">「${randomCheer}」</span>`;
+        };
+        updateMood();
 
         if (currentUIPrefs.hitokotoMode !== 'none') {
             GM_xmlhttpRequest({ method:"GET", url:currentUIPrefs.hitokotoApi || 'https://v1.hitokoto.cn/?c=d&c=i&c=k', onload:(res)=>{
@@ -860,6 +889,7 @@
             </div>
         `;
 
+        // 设置视图事件绑定（完整复用原版逻辑）
         let selectedDay = c.d;
         document.querySelectorAll('#week-segment .hm-segment-btn').forEach(btn => {
             btn.addEventListener('click', () => { document.querySelectorAll('#week-segment .hm-segment-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); selectedDay = parseInt(btn.dataset.index); });
@@ -959,7 +989,8 @@
 
             currentUIPrefs = loadUIPrefs(); refreshDynamicStyles(); widget.classList.toggle('no-glass', !currentUIPrefs.liquidGlass); updateBallIcon(currentUIPrefs.icon);
             d.weeklyGoal = parseInt(document.getElementById('s-g').value) || 10; d.lastSync = 0; GM_setValue(dbKey, d);
-            transitionTo('main'); startIncrementalTrace(dbKey, true); resetEdgeTimer();
+            transitionTo('main'); // 不再自动同步
+            resetEdgeTimer();
         };
     }
 
@@ -1002,7 +1033,7 @@
     });
 
     document.addEventListener('mousedown', e => {
-        if (currentState !== 'ball' && !widget.contains(e.target) && !e.target.closest('#hm-welcome-overlay')) {
+        if (currentState !== 'ball' && !widget.contains(e.target) && !e.target.closest('#hm-welcome-overlay') && !e.target.closest('#hm-update-overlay')) {
             transitionTo('ball');
         }
     });
@@ -1015,11 +1046,11 @@
         document.getElementById('close-ritual').onclick = () => { ov.remove(); widget.style.opacity='1'; widget.style.pointerEvents='auto'; resetEdgeTimer(); };
     }
 
-    // ===================== 系统启动 =====================
+    // ===================== 系统启动（安全版） =====================
     autoDetectAndSave(); let d = GM_getValue(dbKey, null);
     if (!d || Date.now() >= (d.nextResetTime || 0)) { archiveWeeklyData(); d = { weeklyGoal:10, nextResetTime: getBoundaries().next, lastSync:0, weeklySolvedPids:[], cfWeeklySolvedPids:[], atWeeklySolvedPids:[], lcWeeklySolvedPids:[], uvaWeeklySolvedPids:[], dailyRecords:{} }; GM_setValue(dbKey, d); }
-    if (Date.now() - (d.lastSync || 0) > AUTO_CHECK_LIMIT) startIncrementalTrace(dbKey, true);
 
+    // 移除了自动同步（AUTO_CHECK_LIMIT），启动时不再调用 startIncrementalTrace
     const nowPeriod = Math.floor(Date.now() / (1000*60*60*6));
     if (GM_getValue('last_greet_global',0) !== nowPeriod) { showRitual(dbKey); GM_setValue('last_greet_global', nowPeriod); }
     else { widget.style.opacity='1'; widget.style.pointerEvents='auto'; renderMainView(dbKey); resetEdgeTimer(); }
