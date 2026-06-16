@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         致境·OI
 // @namespace    http://yu666.luogu.goal
-// @version      4.2
-// @description  这就是 4.2，一个从古诗文筋骨里长出来的、真正高阶级的刷题伴侣。它不堆砌神兽，而是把垂天、倚天、钧衡、万象、崑冈、惊鸿这些刻在我们文化基因里的意象，锻造成了现代工程学的灵魂。
+// @version      4.3
+// @description  这就是 4.3，一个从古诗文筋骨里长出来的、真正高阶级的刷题伴侣。它不堆砌神兽，而是把垂天、倚天、钧衡、万象、崑冈、惊鸿这些刻在我们文化基因里的意象，锻造成了现代工程学的灵魂。
 // @author       yu_666
 // @match        *://*.luogu.com.cn/*
 // @match        *://*.luogu.com/*
@@ -35,6 +35,31 @@
 
 (function() {
     'use strict';
+
+    // ===================== 洛谷标签 → 知乎搜索（直接使用标签文本） =====================
+    if (location.hostname.includes('luogu.com.cn')) {
+        document.addEventListener('click', function(e) {
+            let target = e.target;
+            // 向上查找最近的 <a> 标签（防止点击到内部 span）
+            while (target && target.tagName !== 'A') {
+                target = target.parentElement;
+                if (!target) return;
+            }
+            // 判断是否为标签链接（例如 /problem/list?tag=xxx）
+            if (target.tagName === 'A' && target.href && target.href.includes('/problem/list?tag=')) {
+                e.preventDefault();
+                e.stopPropagation();
+                const tagText = target.textContent.trim();
+                if (tagText) {
+                    // 直接用标签文本作为搜索词
+                    window.open(
+                        'https://www.zhihu.com/search?type=content&q=' + encodeURIComponent(tagText),
+                        '_blank'
+                    );
+                }
+            }
+        });
+    }
 
     // =================== 🤖 AI 教我 (多平台集成) ===================
     const STORE_MD = 'luogu_md_v8';
