@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         致境·OI
 // @namespace    http://yu666.luogu.goal
-// @version      4.1Beta
+// @version      4.2
 // @description  这就是 4.1，一个从古诗文筋骨里长出来的、真正高阶级的刷题伴侣。它不堆砌神兽，而是把垂天、倚天、钧衡、万象、崑冈、惊鸿这些刻在我们文化基因里的意象，锻造成了现代工程学的灵魂。
 // @author       yu_666
 // @match        *://*.luogu.com.cn/*
