@@ -1,3 +1,4 @@
+// @updateURL https://raw.githubusercontent.com/yu-888-max/zhi-jing-oi/main/zhi-jing-oi.user.js
 // ==UserScript==
 // @name         致境·OI
 // @namespace    http://yu666.luogu.goal
