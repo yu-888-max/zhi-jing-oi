@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         致境·OI
 // @namespace    http://yu666.luogu.goal
-// @version      5.4.1
-// @description  致境·OI：液态玻璃美学 + AI混合调度
+// @version      5.6.2
+// @description  致境·OI
 // @author       yu_666
 // @match        *://*.luogu.com.cn/*
 // @match        *://*.luogu.com/*
@@ -28,6 +28,7 @@
 // @connect      kenkoooo.com
 // @connect      leetcode.cn
 // @connect      uhunt.onlinejudge.org
+// @connect      duckduckgo.com
 // @connect      text.pollinations.ai
 // @connect      *
 // @run-at       document-end
@@ -84,9 +85,15 @@
 
     let pendingAiTask = null;
 
+    // ----- UI：简单 Markdown 渲染 (修复嵌套 & XSS) -----
+    const escapeHtml = (text) => {
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    };
     const renderMd = (text) => {
-        let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        html = html.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(128,128,128,0.1);padding:12px;border-radius:12px;overflow-x:auto;margin:8px 0;"><code>$1</code></pre>');
+        let html = escapeHtml(text);
+        html = html.replace(/```([\s\S]*?)```/g, (match, code) => {
+            return `<pre style="background:rgba(128,128,128,0.1);padding:12px;border-radius:12px;overflow-x:auto;margin:8px 0;"><code>${code}</code></pre>`;
+        });
         html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(128,128,128,0.15);padding:2px 6px;border-radius:6px;font-family:monospace;">$1</code>');
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
@@ -94,12 +101,17 @@
         return html;
     };
 
+    // ----- UI：结果弹窗 (DOM重用 & 点击遮罩关闭) -----
     function showAiResultModal(action, content, model) {
-        const isTeach = action === 'teach';
-        const title = isTeach ? '🤖 AI 教我' : '✨ 题意简化';
-        const gradient = isTeach ? 'linear-gradient(135deg, #4f46e5, #9333ea)' : 'linear-gradient(135deg, #10b981, #3b82f6)';
+        let title = '🤖 AI 助手';
+        let gradient = 'linear-gradient(135deg, #4f46e5, #9333ea)';
+        if (action === 'teach') title = '🤖 AI 教我';
+        else if (action === 'simplify') { title = '✨ 题意简化'; gradient = 'linear-gradient(135deg, #10b981, #3b82f6)'; }
+        else if (action === 'data') { title = '📈 AI 深度诊断'; gradient = 'linear-gradient(135deg, #0f766e, #3b82f6)'; }
+        else if (action === 'report') { title = '📋 教练点评'; gradient = 'linear-gradient(135deg, #ea580c, #eab308)'; }
 
-        let modelName = '内置免费引擎';
+        let modelName = '内置极速引擎(DDG)';
+        if (model === 'pollinations') modelName = '备用免费引擎(Pol)';
         if (model === 'deepseek') modelName = 'DeepSeek';
         if (model === 'gemini') modelName = 'Gemini';
 
@@ -110,7 +122,9 @@
             modal.className = 'hm-ai-modal';
             document.body.appendChild(modal);
             modal.addEventListener('click', (e) => {
-                if (e.target.id === 'hm-close-ai-modal') modal.classList.remove('show');
+                if (e.target === modal) {
+                    modal.classList.remove('show');
+                }
             });
         }
 
@@ -125,8 +139,12 @@
             </div>
         `;
         requestAnimationFrame(() => modal.classList.add('show'));
+        document.getElementById('hm-close-ai-modal')?.addEventListener('click', () => {
+            modal.classList.remove('show');
+        });
     }
 
+    // ----- AI 网站端：跨标签通信与轮询 (防重入 & 稳定监听) -----
     let simplifyPollTimer = null;
     function startSimplifyPoll(model) {
         if (simplifyPollTimer) clearInterval(simplifyPollTimer);
@@ -135,108 +153,219 @@
             if (result) {
                 clearInterval(simplifyPollTimer);
                 simplifyPollTimer = null;
-                GM_deleteValue(STORE_SIMPLIFY_RESULT);
-                showAiResultModal('simplify', result, model);
+                const old = GM_getValue(STORE_SIMPLIFY_RESULT, '');
+                if (old) {
+                    GM_deleteValue(STORE_SIMPLIFY_RESULT);
+                    showAiResultModal('simplify', old, model);
+                }
             }
         }, 1000);
         setTimeout(() => { if (simplifyPollTimer) { clearInterval(simplifyPollTimer); simplifyPollTimer = null; } }, 45000);
     }
 
+    let aiTaskLock = false;
+    function runAiTabTask(type, model) {
+        if (aiTaskLock) return;
+        aiTaskLock = true;
+        if (type === 'simplify' && GM_getValue(STORE_SIMPLIFY_MODE, false) && GM_getValue(STORE_SIMPLIFY_AI, '') === model) {
+            GM_deleteValue(STORE_SIMPLIFY_MODE);
+            const md = GM_getValue(STORE_SIMPLIFY_TEXT, '');
+            if (md) { GM_deleteValue(STORE_SIMPLIFY_TEXT); waitForEditor(model, (editor) => { sendTextAndListen(editor, buildSimplifyPrompt(md), model); }); }
+            else aiTaskLock = false;
+        } else if (type === 'teach' && GM_getValue(STORE_PEND, false) && GM_getValue(STORE_AI_TYPE, '') === model) {
+            GM_deleteValue(STORE_PEND); GM_deleteValue(STORE_AI_TYPE);
+            const md = GM_getValue(STORE_MD, '');
+            if (md) { waitForEditor(model, async (editor) => { if (model === 'deepseek') await enableExpertMode(); sendTextAndListen(editor, buildTeachPrompt(md), model); }); }
+            else aiTaskLock = false;
+        } else {
+            aiTaskLock = false;
+        }
+    }
+
     if (location.hostname === 'chat.deepseek.com') {
-        if (GM_getValue(STORE_SIMPLIFY_MODE, false) && GM_getValue(STORE_SIMPLIFY_AI, '') === 'deepseek') {
-            GM_deleteValue(STORE_SIMPLIFY_MODE);
-            const md = GM_getValue(STORE_SIMPLIFY_TEXT, '');
-            if (md) { GM_deleteValue(STORE_SIMPLIFY_TEXT); waitForEditorDS((ta) => { sendTextAndListen(ta, buildSimplifyPrompt(md), 'deepseek'); }); }
-        } else if (GM_getValue(STORE_PEND, false) && GM_getValue(STORE_AI_TYPE, '') === 'deepseek') {
-            GM_deleteValue(STORE_PEND); GM_deleteValue(STORE_AI_TYPE);
-            const md = GM_getValue(STORE_MD, '');
-            if (md) { waitForEditorDS(async (ta) => { await enableExpertMode(); sendTextAndListen(ta, buildTeachPrompt(md), 'deepseek'); }); }
-        }
+        setTimeout(() => runAiTabTask('teach', 'deepseek'), 1000);
+        setTimeout(() => runAiTabTask('simplify', 'deepseek'), 1000);
     }
-
     if (location.hostname === 'gemini.google.com') {
-        if (GM_getValue(STORE_SIMPLIFY_MODE, false) && GM_getValue(STORE_SIMPLIFY_AI, '') === 'gemini') {
-            GM_deleteValue(STORE_SIMPLIFY_MODE);
-            const md = GM_getValue(STORE_SIMPLIFY_TEXT, '');
-            if (md) { GM_deleteValue(STORE_SIMPLIFY_TEXT); waitForEditorGemini((editor) => { sendTextAndListenGemini(editor, buildSimplifyPrompt(md)); }); }
-        } else if (GM_getValue(STORE_PEND, false) && GM_getValue(STORE_AI_TYPE, '') === 'gemini') {
-            GM_deleteValue(STORE_PEND); GM_deleteValue(STORE_AI_TYPE);
-            const md = GM_getValue(STORE_MD, '');
-            if (md) { waitForEditorGemini((editor) => { sendTextAndListenGemini(editor, buildTeachPrompt(md)); }); }
-        }
+        setTimeout(() => runAiTabTask('teach', 'gemini'), 1000);
+        setTimeout(() => runAiTabTask('simplify', 'gemini'), 1000);
     }
 
-    function waitForEditorDS(cb) {
-        const ta = document.querySelector('#chat-input, textarea[placeholder*="DeepSeek"], textarea');
-        if (ta) return cb(ta); setTimeout(() => waitForEditorDS(cb), 400);
+    function waitForEditor(model, cb) {
+        let attempts = 0;
+        const interval = setInterval(() => {
+            let editor = null;
+            if (model === 'deepseek') {
+                editor = document.querySelector('#chat-input, textarea[placeholder*="DeepSeek"], textarea');
+            } else if (model === 'gemini') {
+                editor = document.querySelector('rich-textarea div[contenteditable="true"]') || document.querySelector('.ql-editor') || document.querySelector('div[contenteditable="true"][role="textbox"]');
+            }
+            if (editor) {
+                clearInterval(interval);
+                cb(editor);
+                aiTaskLock = false;
+            } else if (++attempts > 30) {
+                clearInterval(interval);
+                aiTaskLock = false;
+            }
+        }, 400);
     }
-    function waitForEditorGemini(cb) {
-        const editor = document.querySelector('rich-textarea div[contenteditable="true"]') || document.querySelector('.ql-editor') || document.querySelector('div[contenteditable="true"][role="textbox"]');
-        if (editor) return cb(editor); setTimeout(() => waitForEditorGemini(cb), 500);
-    }
+
     async function enableExpertMode(retries = 5) {
         for (let i = 0; i < retries; i++) {
             try { const radio = document.querySelector('[data-model-type="expert"], [data-model-type="deepthink"]'); if (radio && radio.getAttribute('aria-checked') !== 'true') { radio.click(); return; } } catch(e) {}
             await new Promise(r => setTimeout(r, 500));
         }
     }
-    function sendTextAndListen(textarea, text, type) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(textarea, text); textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        setTimeout(() => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })); startDeepSeekReplyListener(); }, 300);
+
+    function sendTextAndListen(editor, text, model) {
+        if (model === 'deepseek') {
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+            setter.call(editor, text);
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
+            setTimeout(() => {
+                editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                startReplyListener(model);
+            }, 300);
+        } else if (model === 'gemini') {
+            editor.focus();
+            document.execCommand('insertText', false, text);
+            setTimeout(() => {
+                const sendBtn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], .send-button');
+                if (sendBtn && !sendBtn.disabled) sendBtn.click();
+                startReplyListener(model);
+            }, 800);
+        }
     }
-    function sendTextAndListenGemini(editor, text) {
-        editor.focus(); document.execCommand('insertText', false, text);
-        setTimeout(() => { const sendBtn = document.querySelector('button[aria-label*="Send"], button[aria-label*="发送"], .send-button'); if (sendBtn && !sendBtn.disabled) sendBtn.click(); startGeminiReplyListener(); }, 800);
-    }
-    function startDeepSeekReplyListener() {
-        const observer = new MutationObserver((mutations, obs) => {
-            const messages = document.querySelectorAll('[class*="message"]'); const lastMsg = messages[messages.length - 1];
-            if (lastMsg && lastMsg.querySelector('[class*="markdown"]')) {
-                setTimeout(() => { const content = lastMsg.querySelector('[class*="markdown"]').innerText; if (content) { GM_setValue(STORE_SIMPLIFY_RESULT, content); obs.disconnect(); } }, 2000);
+
+    function startReplyListener(model) {
+        let handled = false;
+        const observer = new MutationObserver(() => {
+            if (handled) return;
+            let content = '';
+            if (model === 'deepseek') {
+                const msgs = document.querySelectorAll('[class*="message"]');
+                const last = msgs[msgs.length - 1];
+                if (last) {
+                    const md = last.querySelector('[class*="markdown"]');
+                    if (md) content = md.innerText;
+                }
+            } else if (model === 'gemini') {
+                const blocks = document.querySelectorAll('.model-response, .message-content');
+                const last = blocks[blocks.length - 1];
+                if (last && last.innerText.trim().length > 20) content = last.innerText;
+            }
+            if (content.trim().length > 0) {
+                handled = true;
+                observer.disconnect();
+                GM_setValue(STORE_SIMPLIFY_RESULT, content);
             }
         });
-        observer.observe(document.body, { childList: true, subtree: true }); setTimeout(() => observer.disconnect(), 35000);
-    }
-    function startGeminiReplyListener() {
-        const observer = new MutationObserver((mutations, obs) => {
-            const responseBlocks = document.querySelectorAll('.model-response, .message-content'); const lastBlock = responseBlocks[responseBlocks.length - 1];
-            if (lastBlock && lastBlock.innerText.trim().length > 20) {
-                setTimeout(() => { const content = lastBlock.innerText; if (content) { GM_setValue(STORE_SIMPLIFY_RESULT, content); obs.disconnect(); } }, 2000);
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => {
+            if (!handled) {
+                observer.disconnect();
+                if (model === 'deepseek') {
+                    const last = document.querySelectorAll('[class*="message"]');
+                    const md = last[last.length - 1]?.querySelector('[class*="markdown"]');
+                    if (md?.innerText) GM_setValue(STORE_SIMPLIFY_RESULT, md.innerText);
+                }
             }
+        }, 35000);
+    }
+
+    // --- 极速双路免费 AI 引擎 (DuckDuckGo + Pollinations) ---
+    async function requestDuckDuckGo(prompt) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET', url: 'https://duckduckgo.com/duckchat/v1/status', headers: { 'x-vqd-accept': '1' },
+                onload: res => {
+                    const vqd = res.responseHeaders.match(/x-vqd-4:\s*(.+)/i)?.[1]?.trim();
+                    if (!vqd) return reject(new Error('DDG Token Fetch Failed'));
+                    GM_xmlhttpRequest({
+                        method: 'POST', url: 'https://duckduckgo.com/duckchat/v1/chat',
+                        headers: { 'x-vqd-4': vqd, 'Content-Type': 'application/json' }, timeout: 15000,
+                        data: JSON.stringify({ model: "gpt-4o-mini", messages: [{role: "user", content: prompt}] }),
+                        onload: r => {
+                            if(r.status !== 200) return reject(new Error('DDG HTTP Error: ' + r.status));
+                            let txt = ''; const lines = r.responseText.split('\n');
+                            for(let l of lines) {
+                                if(l.startsWith('data: ') && !l.includes('[DONE]')) {
+                                    try { txt += JSON.parse(l.slice(6)).message || ''; } catch(e){}
+                                }
+                            }
+                            if(txt) resolve({ content: txt, engine: 'builtin' }); else reject(new Error('DDG Empty Response'));
+                        },
+                        onerror: () => reject(new Error('DDG Network Error')), ontimeout: () => reject(new Error('DDG Timeout'))
+                    });
+                }, onerror: () => reject(new Error('DDG Init Network Error'))
+            });
         });
-        observer.observe(document.body, { childList: true, subtree: true }); setTimeout(() => observer.disconnect(), 35000);
+    }
+
+    async function requestPollinations(prompt) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST', url: 'https://text.pollinations.ai/openai',
+                headers: { 'Content-Type': 'application/json' }, timeout: 35000,
+                data: JSON.stringify({
+                    model: 'openai', stream: false,
+                    messages: [ {role: 'system', content: '你是一个专业的金牌算法教练。'}, {role: 'user', content: prompt} ]
+                }),
+                onload: res => {
+                    if (res.status !== 200) return reject(new Error('Pollinations Status: ' + res.status));
+                    let text = res.responseText;
+                    try { const data = JSON.parse(text); if (data.choices && data.choices.length > 0) return resolve({ content: data.choices[0].message.content, engine: 'pollinations' }); } catch(e) {}
+                    if (text && text.trim().length > 0) resolve({ content: text, engine: 'pollinations' }); else reject(new Error('Pollinations Empty'));
+                },
+                onerror: () => reject(new Error('Pollinations Network Error')), ontimeout: () => reject(new Error('Pollinations Timeout'))
+            });
+        });
+    }
+
+    async function pureBackgroundAiCall(prompt) {
+        const prefs = loadUIPrefs();
+        let engine = prefs.aiTeachEngine || 'builtin';
+        if (engine === 'deepseek' && !prefs.deepseekApiKey) engine = 'builtin';
+        if (engine === 'gemini' && !prefs.geminiApiKey) engine = 'builtin';
+        if (engine === 'ask') engine = 'builtin';
+
+        if (engine === 'builtin') {
+            try { return await requestDuckDuckGo(prompt); }
+            catch(e) { return await requestPollinations(prompt); }
+        } else if (engine === 'deepseek') {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'POST', url: 'https://api.deepseek.com/chat/completions',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + prefs.deepseekApiKey }, timeout: 60000,
+                    data: JSON.stringify({ model: 'deepseek-chat', messages: [{role: 'user', content: prompt}] }),
+                    onload: res => { try { const data = JSON.parse(res.responseText); if (data.choices) resolve({content: data.choices[0].message.content, engine: 'deepseek'}); else reject(new Error('异常')); } catch(e) { reject(new Error('解析失败')); } },
+                    onerror: () => reject(new Error('网络失败')), ontimeout: () => reject(new Error('超时'))
+                });
+            });
+        } else if (engine === 'gemini') {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'POST', url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + prefs.geminiApiKey,
+                    headers: { 'Content-Type': 'application/json' }, timeout: 60000,
+                    data: JSON.stringify({ contents: [{parts: [{text: prompt}]}] }),
+                    onload: res => { try { const data = JSON.parse(res.responseText); if (data.candidates) resolve({content: data.candidates[0].content.parts[0].text, engine: 'gemini'}); else reject(new Error('异常')); } catch(e) { reject(new Error('解析失败')); } },
+                    onerror: () => reject(new Error('网络失败')), ontimeout: () => reject(new Error('超时'))
+                });
+            });
+        }
     }
 
     async function executeAiTask(action, engine, md, btnElement) {
         const origText = btnElement.innerHTML;
-        btnElement.innerHTML = '⏳ 联络中...';
+        btnElement.innerHTML = '⏳ 极速联络中...';
         btnElement.style.pointerEvents = 'none';
 
         if (engine === 'builtin') {
             const prompt = action === 'teach' ? buildTeachPrompt(md) : buildSimplifyPrompt(md);
             try {
-                const res = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: 'POST', url: 'https://text.pollinations.ai/openai',
-                        headers: { 'Content-Type': 'application/json' }, timeout: 45000,
-                        data: JSON.stringify({
-                            model: 'openai', stream: false,
-                            messages: [ {role: 'system', content: '你是一个严格服从指令的助手。请用通俗易懂、结构清晰的中文进行回答。'}, {role: 'user', content: prompt} ]
-                        }),
-                        onload: res => {
-                            try {
-                                if (res.status !== 200) return reject(new Error('免费接口暂时不可用，状态码：' + res.status));
-                                let text = res.responseText;
-                                try { const data = JSON.parse(text); if (data.choices && data.choices.length > 0) return resolve(data.choices[0].message.content); } catch(e) {}
-                                if (text && text.trim().length > 0) resolve(text); else reject(new Error('免费节点返回内容为空'));
-                            } catch (e) { reject(new Error('免费节点响应异常')); }
-                        },
-                        onerror: () => reject(new Error('网络请求失败，请检查环境')),
-                        ontimeout: () => reject(new Error('请求超时 (45秒)，请重试'))
-                    });
-                });
-                showAiResultModal(action, res, 'builtin');
+                const res = await pureBackgroundAiCall(prompt);
+                showAiResultModal(action, res.content, res.engine);
             } catch (err) { alert('AI 辅助暂时出错：' + err.message); }
             finally { btnElement.innerHTML = origText; btnElement.style.pointerEvents = 'auto'; }
         } else {
@@ -247,6 +376,58 @@
         }
     }
 
+    // --- 注入：AI 懂我 (洛谷主页原生 - 精准定位右侧) ---
+    function injectLuoguAIJump() {
+        if (location.hostname !== 'www.luogu.com.cn') return;
+        const tryInject = () => {
+            const randomBtn = document.querySelector('button[name="gotorandom"]');
+            if (randomBtn && !document.getElementById('hm-luogu-ai-jump')) {
+                const aiBtn = document.createElement('button');
+                aiBtn.id = 'hm-luogu-ai-jump';
+                aiBtn.className = 'am-btn am-btn-sm';
+                aiBtn.style.cssText = 'margin-left: 5px; background: linear-gradient(135deg, #8b5cf6, #3b82f6); color: white; border: none; font-weight: bold; transition: all 0.2s; border-radius: 4px; padding: 0 12px;';
+                aiBtn.innerHTML = '✨ AI 懂我';
+                aiBtn.onmouseover = () => { aiBtn.style.transform = 'translateY(-2px)'; aiBtn.style.boxShadow = '0 4px 12px rgba(139, 92, 246, 0.4)'; };
+                aiBtn.onmouseout = () => { aiBtn.style.transform = 'none'; aiBtn.style.boxShadow = 'none'; };
+                aiBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    const orig = aiBtn.innerHTML;
+                    aiBtn.innerHTML = '⏳ 极速测算...'; aiBtn.disabled = true;
+                    try {
+                        const d = GM_getValue(dbKey) || {};
+                        const highest = (d.weeklySolvedPids || []).reduce((max, p) => Math.max(max, p.diff || 0), 0);
+                        const history = GM_getValue('ai_rec_history', []);
+                        const difficultyHint = highest === 0 ? '入门（难度1~2）' : `与难度${highest}相近`;
+                        const prompt = `你是一个非常聪明的OI推题机。当前时间戳${Date.now()}，选手最高完成难度${highest}（${difficultyHint}）。
+请推荐一道**随机**的经典洛谷题目，只回复纯题目编号（必须以P开头，如P3371），禁止任何额外文字。
+注意：绝对不要推荐以下已经推荐过的题目：${history.join(',') || '无'}。`;
+                        const res = await pureBackgroundAiCall(prompt);
+                        const match = res.content.match(/P\d{4,5}/i);
+                        if (match) {
+                            const pid = match[0].toUpperCase();
+                            // 保存推荐历史
+                            const newHistory = [...history, pid].slice(-20);
+                            GM_setValue('ai_rec_history', newHistory);
+                            window.location.href = '/problem/' + pid;
+                        } else {
+                            alert('AI 回复格式异常，请重试');
+                            aiBtn.innerHTML = orig; aiBtn.disabled = false;
+                        }
+                    } catch(err) {
+                        alert('AI 推题失败：' + err.message);
+                        aiBtn.innerHTML = orig; aiBtn.disabled = false;
+                    }
+                };
+                randomBtn.parentNode.insertBefore(aiBtn, randomBtn.nextSibling);
+            } else {
+                setTimeout(tryInject, 1000);
+            }
+        };
+        tryInject();
+    }
+    injectLuoguAIJump();
+
+    // --- 注入：各大平台教我与简化 (优化文本提取) ---
     function addAIBotButton(selector, extractFn) {
         function tryAdd() {
             const container = typeof selector === 'string' ? document.querySelector(selector) : selector();
@@ -283,19 +464,36 @@
     if (location.hostname === 'www.luogu.com.cn' && location.pathname.startsWith('/problem/')) {
         addAIBotButton('.problem-block-actions, .operation', () => {
             return new Promise(resolve => {
-                const origWrite = navigator.clipboard.writeText; let captured = '';
-                let timeout = setTimeout(() => { navigator.clipboard.writeText = origWrite; resolve(document.querySelector('.problem-card')?.innerText || window.location.href); }, 800);
-                navigator.clipboard.writeText = (text) => { captured = text; navigator.clipboard.writeText = origWrite; clearTimeout(timeout); resolve(captured); return Promise.resolve(); };
-                const copyLink = document.querySelector('a[href="javascript:void 0"]');
-                if (!copyLink) { navigator.clipboard.writeText = origWrite; clearTimeout(timeout); resolve(''); return; }
-                copyLink.click();
+                const copyBtn = document.querySelector('a[data-v-xxxx]') || document.querySelector('a[class*="copy"]');
+                if (copyBtn && copyBtn.href === 'javascript:void 0') {
+                    const origWrite = navigator.clipboard.writeText;
+                    let captured = '';
+                    let timeout = setTimeout(() => {
+                        navigator.clipboard.writeText = origWrite;
+                        resolve(document.querySelector('.problem-card')?.innerText || window.location.href);
+                    }, 800);
+                    navigator.clipboard.writeText = (text) => {
+                        captured = text;
+                        navigator.clipboard.writeText = origWrite;
+                        clearTimeout(timeout);
+                        resolve(captured);
+                        return Promise.resolve();
+                    };
+                    copyBtn.click();
+                } else {
+                    resolve(document.querySelector('.problem-card')?.innerText || '');
+                }
             });
         });
     }
     if (location.hostname.includes('codeforces.com') && location.pathname.includes('/problem')) addAIBotButton('.problem-statement .header .title', () => document.querySelector('.problem-statement')?.innerText || '');
     if (location.hostname.includes('atcoder.jp') && location.pathname.includes('/tasks/')) addAIBotButton('span.h2, .h2', () => document.querySelector('#task-statement')?.innerText || '');
     if (location.hostname.includes('leetcode.cn') && location.pathname.includes('/problems/')) {
-        addAIBotButton('.text-title-large, h1', () => { const title = document.querySelector('.text-title-large, h1')?.innerText || ''; const desc = document.querySelector('[data-track-load="description_content"]') || document.querySelector('div[class*="content"]'); return title + '\n\n' + (desc?.innerText || window.location.href); });
+        addAIBotButton('.text-title-large, h1', () => {
+            const title = document.querySelector('.text-title-large, h1')?.innerText || '';
+            const desc = document.querySelector('[data-track-load="description_content"]') || document.querySelector('div[class*="content"]');
+            return title + '\n\n' + (desc?.innerText || window.location.href);
+        });
     }
 
     // =================== 致境·OI 主体 ===================
@@ -303,6 +501,29 @@
     const dbKey = 'zhi_jing_oi_data';
     const UI_PREFS_KEY = 'hm_ui_prefs';
     const PANEL_W = 740;
+
+    const LG_COLORS = ['#bfbfbf', '#fe4c61', '#f39c11', '#ffc116', '#52c41a', '#3498db', '#9d3dcf', '#0e1d69'];
+    function getLuoguColor(diff) { return LG_COLORS[Math.min(7, Math.max(0, parseInt(diff)||0))]; }
+    function getCfColor(rating) {
+        let r = parseInt(rating)||0;
+        if(r<1200) return LG_COLORS[0];
+        if(r<1400) return LG_COLORS[4];
+        if(r<1600) return LG_COLORS[5];
+        if(r<1900) return LG_COLORS[6];
+        if(r<2100) return LG_COLORS[3];
+        if(r<2400) return LG_COLORS[2];
+        return LG_COLORS[1];
+    }
+    function getAtColor(point) {
+        let p = parseInt(point)||0;
+        if(p<400) return LG_COLORS[0];
+        if(p<800) return LG_COLORS[3];
+        if(p<1200) return LG_COLORS[4];
+        if(p<1600) return LG_COLORS[5];
+        if(p<2000) return LG_COLORS[6];
+        if(p<2400) return LG_COLORS[2];
+        return LG_COLORS[1];
+    }
 
     const DEFAULT_UI_PREFS = {
         physicsEnabled: true, liquidGlass: true, constrainToScreen: true,
@@ -314,12 +535,13 @@
         lgMinDiff: 0, cfMinRating: 0, atMinPoint: 0,
         reportAutoShow: false, autoSyncEnabled: false, syncCooldown: 3,
         goalNotify: false, ballSize: 68, defaultView: 'main', ballDoubleClick: 'none',
-        aiTeachEngine: 'builtin', aiSimplifyEngine: 'builtin'
+        aiTeachEngine: 'builtin', aiSimplifyEngine: 'builtin',
+        uvaUid: '', atUser: '', leetcodeSlug: ''
     };
 
     function loadUIPrefs() { return { ...DEFAULT_UI_PREFS, ...GM_getValue(UI_PREFS_KEY, {}) }; }
     function getConfig() {
-        const def = { name: 'OIer', d: 1, h: 0, m: 0, lg: '', cf: '', at: '', lc: '', uva: '', w_en: false, lg_w: [1,1,2,3,4,5,6,8], cf_w: 400, at_w: 100, uva_w: 1, lc_w: 1, weeklyGoal: 10, weeklyGoalCount: 10, weeklyGoalScore: 50, goalMode: 'count' };
+        const def = { name: 'OIer', d: 1, h: 0, m: 0, lg: '', cf: '', at: '', lc: '', uva: '', w_en: false, lg_w: [1,1,2,3,4,5,6,8], cf_w: 400, at_w: 100, uva_w: 1, lc_w: 1, weeklyGoal: 10, weeklyGoalCount: 10, weeklyGoalScore: 50, goalMode: 'count', uvaUid: '', leetcodeSlug: '' };
         return Object.assign(def, GM_getValue('yu_config', {}));
     }
 
@@ -343,13 +565,17 @@
     function evaluateStats(d, prefs) {
         let count = 0, score = 0;
         const lArr = d.weeklySolvedPids || [], cArr = d.cfWeeklySolvedPids || [], aArr = d.atWeeklySolvedPids || [], lcArr = d.lcWeeklySolvedPids || [], uArr = d.uvaWeeklySolvedPids || [];
-        count = lArr.length + cArr.length + aArr.length + lcArr.length + uArr.length;
-        const lg_w = prefs.lg_w || DEFAULT_UI_PREFS.lg_w, cf_w = prefs.cf_w || DEFAULT_UI_PREFS.cf_w, at_w = prefs.at_w || DEFAULT_UI_PREFS.at_w;
+
+        const lg_w = prefs.lg_w || DEFAULT_UI_PREFS.lg_w;
+        const cf_w = prefs.cf_w || DEFAULT_UI_PREFS.cf_w;
+        const at_w = prefs.at_w || DEFAULT_UI_PREFS.at_w;
         const lgMin = prefs.lgMinDiff || 0, cfMin = prefs.cfMinRating || 0, atMin = prefs.atMinPoint || 0;
-        lArr.forEach(p => { let diff = parseInt(p.diff) || 0; if (diff >= lgMin) score += parseFloat(lg_w[Math.min(lg_w.length - 1, Math.max(0, diff))] || 1); });
-        cArr.forEach(p => { let r = parseFloat(p.rating) || 0; if (r >= cfMin) score += r > 0 ? (r / cf_w) : 1; });
-        aArr.forEach(p => { let pt = parseFloat(p.point) || 0; if (pt >= atMin) score += pt > 0 ? (pt / at_w) : 1; });
-        lcArr.forEach(() => score += prefs.lc_w || 1); uArr.forEach(() => score += prefs.uva_w || 1);
+
+        lArr.forEach(p => { let diff = parseInt(p.diff) || 0; if (diff >= lgMin) { count++; score += parseFloat(lg_w[Math.min(lg_w.length - 1, Math.max(0, diff))] || 1); } });
+        cArr.forEach(p => { let r = parseFloat(p.rating) || 0; if (r >= cfMin) { count++; score += r > 0 ? (r / (cf_w||400)) : 1; } });
+        aArr.forEach(p => { let pt = parseFloat(p.point) || 0; if (pt >= atMin) { count++; score += pt > 0 ? (pt / (at_w||100)) : 1; } });
+        lcArr.forEach(() => { count++; score += prefs.lc_w || 1; });
+        uArr.forEach(() => { count++; score += prefs.uva_w || 1; });
         return { count, score: score || 0 };
     }
 
@@ -370,10 +596,11 @@
             if (!uid) { const m = document.cookie.match(/(?:^|;)\s*_uid=(\d+)/); uid = m ? m[1] : null; }
             if (uid && config.lg !== String(uid)) { config.lg = String(uid); updated = true; }
         }
-        if (updated) GM_setValue('yu_config', config); return config;
+        if (updated) GM_setValue('yu_config', config);
+        return config;
     }
 
-    const safeWait = (ms) => new Promise(r => setTimeout(r, 1500 + Math.random() * 1500));
+    const safeWait = (ms) => new Promise(r => setTimeout(r, ms + Math.random() * ms * 0.5));
     async function fetchOS(url) {
         return new Promise((resolve) => {
             GM_xmlhttpRequest({ method: "GET", url, headers: { "x-lentille-request": "content-only" },
@@ -394,6 +621,44 @@
         return { last: start.getTime(), next: next.getTime() };
     }
 
+    async function syncAtCoder(user, sinceMs) {
+        const sinceSec = Math.floor(sinceMs / 1000);
+        const url = `https://kenkoooo.com/atcoder/atcoder-api/v3/user/submissions?user=${user}&from_sec=${sinceSec}`;
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET', url,
+                onload: (res) => {
+                    try {
+                        const data = JSON.parse(res.responseText);
+                        const acSubs = data.filter(s => s.result === 'AC');
+                        resolve(acSubs.map(s => ({ id: s.problem_id, point: s.point || 0 })));
+                    } catch(e) { resolve([]); }
+                },
+                onerror: () => resolve([])
+            });
+        });
+    }
+
+    async function syncUVA(uid, sinceMs) {
+        const sinceSec = Math.floor(sinceMs / 1000);
+        const url = `https://uhunt.onlinejudge.org/api/subs-user/${uid}`;
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET', url,
+                onload: (res) => {
+                    try {
+                        const data = JSON.parse(res.responseText);
+                        const subs = data.subs || [];
+                        const filtered = subs.filter(s => s[4] >= sinceSec && s[2] === 90);
+                        resolve(filtered.map(s => ({ id: String(s[1]), diff: s[5] || 0 })));
+                    } catch(e) { resolve([]); }
+                },
+                onerror: () => resolve([])
+            });
+        });
+    }
+
+    // 核心同步函数（含动态真实进度条，从0%开始）
     async function startIncrementalTrace(dbKey, silent = false) {
         const bound = getBoundaries(), userData = GM_getValue(dbKey) || { weeklyGoalCount: 10, weeklyGoalScore: 50 };
         if (!silent) {
@@ -406,20 +671,26 @@
         let contestOnlyPids = new Set(userData.contestOnlyPids || []);
         let cfPidsMap = new Map((userData.cfWeeklySolvedPids || []).map(p => [p.id, p]));
         let atPidsMap = new Map((userData.atWeeklySolvedPids || []).map(p => [p.id, p]));
+        let uvaPidsMap = new Map((userData.uvaWeeklySolvedPids || []).map(p => [p.id, p]));
 
-        const logCompact = (msg, sub) => {
+        const logCompact = (msg, sub, progressVal) => {
             if (!silent && currentState === 'main') {
                 const vMain = document.querySelector('#hm-view-main .hm-view-content');
-                if (vMain) vMain.innerHTML = `<div class="hm-text-premium hm-view-title" style="text-align:center;margin-bottom:20px;">🌟 深度溯源中...</div><div class="sync-log">${msg}<br><span style="opacity:0.6;">${sub}</span></div><div style="height:4px;background:rgba(0,0,0,0.05);border-radius:10px;overflow:hidden;"><div style="width:40%;height:100%;background:var(--hm-blue);border-radius:10px;animation:hm-scan 1.5s infinite linear;"></div></div>`;
+                if (vMain) vMain.innerHTML = `<div class="hm-text-premium hm-view-title" style="text-align:center;margin-bottom:20px;">🌟 深度溯源中...</div><div class="sync-log">${msg}<br><span style="opacity:0.6;">${sub}</span></div><div style="height:4px;background:rgba(0,0,0,0.05);border-radius:10px;overflow:hidden;"><div style="width:${progressVal||0}%;height:100%;background:var(--hm-blue);border-radius:10px;transition:width 0.3s;"></div></div>`;
             }
         };
+
+        // 显示0%初始状态
+        logCompact('准备同步', '初始化中...', 0);
+        await safeWait(300);
 
         const config = getConfig();
         try {
             if (config.lg) {
                 let page = 1, foundPotential = new Map(), stop = false;
                 while (!stop && page <= 3) {
-                    logCompact('检索洛谷记录', `第 ${page} 页`); await safeWait(1500);
+                    logCompact('检索洛谷记录', `第 ${page} 页`, (page / 3) * 30);
+                    await safeWait(1500);
                     const data = await fetchOS(`https://www.luogu.com.cn/record/list?user=${config.lg}&status=12&page=${page}`);
                     const rs = data?.currentData?.records?.result || data?.records?.result || [];
                     if (!rs.length) break;
@@ -427,31 +698,49 @@
                     if (!stop) page++;
                 }
                 let pids = Array.from(foundPotential.keys());
-                for (let i = 0; i < pids.length; i++) {
-                    const pid = pids[i]; if (weeklyPidsMap.has(pid)) continue;
-                    logCompact('校验题目库', `${i+1}/${pids.length} - [${pid}]`); await safeWait(2000);
-                    const d = await fetchOS(`https://www.luogu.com.cn/record/list?user=${config.lg}&pid=${pid}&status=12&page=1`);
-                    const allRs = d?.currentData?.records?.result || d?.records?.result || [];
-                    const prac = allRs.filter(r => !r.contest && (r.submitTime * 1000 >= bound.last));
-                    const cont = allRs.filter(r => r.contest && (r.submitTime * 1000 >= bound.last));
-                    if (prac.length > 0) { weeklyPidsMap.set(pid, { id: pid, diff: foundPotential.get(pid) }); }
-                    else if (cont.length > 0 && !weeklyPidsMap.has(pid)) contestOnlyPids.add(pid);
+                const batchSize = 3;
+                for (let i = 0; i < pids.length; i += batchSize) {
+                    const batch = pids.slice(i, i + batchSize);
+                    await Promise.all(batch.map(async (pid) => {
+                        if (weeklyPidsMap.has(pid)) return;
+                        logCompact('校验题目库', `${i+1}/${pids.length} - [${pid}]`, 30 + (i / pids.length) * 40);
+                        await safeWait(1500);
+                        const d = await fetchOS(`https://www.luogu.com.cn/record/list?user=${config.lg}&pid=${pid}&status=12&page=1`);
+                        const allRs = d?.currentData?.records?.result || d?.records?.result || [];
+                        const prac = allRs.filter(r => !r.contest && (r.submitTime * 1000 >= bound.last));
+                        const cont = allRs.filter(r => r.contest && (r.submitTime * 1000 >= bound.last));
+                        if (prac.length > 0) { weeklyPidsMap.set(pid, { id: pid, diff: foundPotential.get(pid) }); }
+                        else if (cont.length > 0 && !weeklyPidsMap.has(pid)) contestOnlyPids.add(pid);
+                    }));
                 }
             }
             if (config.cf) {
-                logCompact('同步 Codeforces', config.cf); await safeWait(3000);
+                logCompact('同步 Codeforces', config.cf, 75);
+                await safeWait(3000);
                 const cfRes = await new Promise(res => GM_xmlhttpRequest({ method: "GET", url: `https://codeforces.com/api/user.status?handle=${config.cf}&from=1&count=60`, onload: r => res(JSON.parse(r.responseText)), onerror: () => res(null) }));
                 if (cfRes?.status === "OK") for (let s of cfRes.result) { if (s.creationTimeSeconds * 1000 < bound.last) break; if (s.verdict === "OK") cfPidsMap.set(`${s.problem.contestId}${s.problem.index}`, { id: `${s.problem.contestId}${s.problem.index}`, rating: s.problem.rating || 0 }); }
             }
+            if (config.at) {
+                logCompact('同步 AtCoder', config.at, 85);
+                const atSubs = await syncAtCoder(config.at, bound.last);
+                atSubs.forEach(s => atPidsMap.set(s.id, s));
+            }
+            if (config.uvaUid) {
+                logCompact('同步 UVA', config.uvaUid, 95);
+                const uvaSubs = await syncUVA(config.uvaUid, bound.last);
+                uvaSubs.forEach(s => uvaPidsMap.set(s.id, s));
+            }
+
             userData.weeklySolvedPids = Array.from(weeklyPidsMap.values());
             userData.cfWeeklySolvedPids = Array.from(cfPidsMap.values());
             userData.atWeeklySolvedPids = Array.from(atPidsMap.values());
+            userData.uvaWeeklySolvedPids = Array.from(uvaPidsMap.values());
             userData.contestOnlyPids = [...contestOnlyPids];
             userData.lastSync = Date.now(); userData.nextResetTime = bound.next;
 
             const today = new Date().toISOString().slice(0,10);
             if (!userData.dailyRecords) userData.dailyRecords = {};
-            const todayCount = userData.weeklySolvedPids.length+userData.cfWeeklySolvedPids.length+userData.atWeeklySolvedPids.length+(userData.lcWeeklySolvedPids||[]).length+(userData.uvaWeeklySolvedPids||[]).length;
+            const todayCount = userData.weeklySolvedPids.length+userData.cfWeeklySolvedPids.length+userData.atWeeklySolvedPids.length+(userData.lcWeeklySolvedPids||[]).length+userData.uvaWeeklySolvedPids.length;
             if (todayCount > 0) userData.dailyRecords[today] = todayCount;
 
             GM_setValue(dbKey, userData);
@@ -459,7 +748,7 @@
         } catch (e) { console.error(e); }
     }
 
-    // ===================== UI 样式 (精准GPU层 + 丝滑动画) =====================
+    // ===================== UI 样式 =====================
     const styleEl = document.createElement('style');
     function updateDynamicStyles() {
         const p = currentUIPrefs;
@@ -522,9 +811,8 @@
         .hm-segment-btn.active { background:rgba(255,255,255,0.4); backdrop-filter:blur(24px) saturate(200%); -webkit-backdrop-filter:blur(24px) saturate(200%); box-shadow:0 4px 14px rgba(0,0,0,0.08), inset 0 1px 1px rgba(255,255,255,0.6); color:var(--hm-blue); font-weight:800; }
 
         .hm-ac-detail { margin-top:12px; }
-        .hm-ac-card { display:flex; align-items:center; padding:8px 14px; margin-bottom:6px; background:rgba(255,255,255,0.2); border-radius:14px; gap:12px; font-size:15px; border:1px solid rgba(255,255,255,0.2); transition:transform 0.2s; }
-        .hm-ac-card:hover { transform: translateY(-2px); background:rgba(255,255,255,0.35); }
-        .hm-ac-card a { color:var(--hm-blue); text-decoration:none; font-weight:700; margin-left:auto; }
+        .hm-ac-card { display:flex; align-items:center; padding:8px 14px; margin-bottom:6px; border-radius:14px; gap:12px; font-size:15px; transition:transform 0.2s, box-shadow 0.2s; }
+        .hm-ac-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
 
         .hm-setting-item { margin-bottom: 24px; }
         .hm-settings-group { background: rgba(255,255,255,0.1); border-radius: 24px; padding: 24px 28px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.2); }
@@ -571,7 +859,6 @@
     hmOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.3);z-index:9999998;backdrop-filter:blur(6px);opacity:0;pointer-events:none;transition:opacity 0.4s;transform:translateZ(0);';
     document.body.appendChild(hmOverlay);
 
-    // 严密阻断点击穿透
     ['mousedown', 'touchstart', 'click'].forEach(evt => {
         hmOverlay.addEventListener(evt, (e) => {
             if (e.target === hmOverlay) {
@@ -695,7 +982,7 @@
                 <div style="font-size:48px;margin:10px 0">🤖</div>
                 <h3 class="hm-text-premium hm-view-title">选择本次使用的 AI</h3>
                 <div style="display:flex;gap:12px">
-                    <button id="hm-btn-ai-builtin" class="hm-glass-btn hm-glass-btn-primary" style="flex:1">内置免费接口</button>
+                    <button id="hm-btn-ai-builtin" class="hm-glass-btn hm-glass-btn-primary" style="flex:1">内置极速引擎</button>
                     <button id="hm-btn-ai-ds" class="hm-glass-btn" style="flex:1">DeepSeek</button>
                     <button id="hm-btn-ai-gemini" class="hm-glass-btn" style="flex:1">Gemini</button>
                 </div>
@@ -730,12 +1017,13 @@
         vMain.innerHTML = `
             <div class="hm-text-premium hm-view-title">🎯 致境·OI</div>
             ${progHtml}
-            <div style="display:flex;justify-content:center;gap:16px;font-size:15px;font-weight:800;opacity:0.6;margin-bottom:16px">${prefs.lg?`<span>LG:${d.weeklySolvedPids?.length||0}</span>`:''}${prefs.cf?`<span>CF:${d.cfWeeklySolvedPids?.length||0}</span>`:''}${prefs.at?`<span>AT:${d.atWeeklySolvedPids?.length||0}</span>`:''}${prefs.lc?`<span>LC:${(d.lcWeeklySolvedPids||[]).length||0}</span>`:''}${prefs.uva?`<span>UVA:${(d.uvaWeeklySolvedPids||[]).length||0}</span>`:''}</div>
+            <div style="display:flex;justify-content:center;gap:16px;font-size:15px;font-weight:800;opacity:0.6;margin-bottom:16px">${prefs.lg?`<span>LG:${d.weeklySolvedPids?.length||0}</span>`:''}${prefs.cf?`<span>CF:${d.cfWeeklySolvedPids?.length||0}</span>`:''}${prefs.at?`<span>AT:${d.atWeeklySolvedPids?.length||0}</span>`:''}${prefs.lc?`<span>LC:${(d.lcWeeklySolvedPids||[]).length||0}</span>`:''}${prefs.uvaUid?`<span>UVA:${(d.uvaWeeklySolvedPids||[]).length||0}</span>`:''}</div>
             <div id="hm-mood-card" style="margin:12px 0;padding:12px;background:rgba(255,255,255,0.15);border-radius:20px;text-align:center">
                 <div id="hm-mood-emoji" style="font-size:32px"></div><div id="hm-mood-text" class="hm-text-premium" style="font-size:16px;margin-top:6px"></div>
             </div>
             <div id="hm-quote" style="opacity:0.65;margin:12px 0;text-align:center;font-style:italic;font-size:15px;min-height:40px">正在感悟中...</div>
             ${(d.contestOnlyPids||[]).length>0?`<div style="font-size:14px;color:#c62828;background:rgba(255,235,235,0.7);padding:10px;border-radius:16px;margin-bottom:12px;text-align:center">⚠️ ${d.contestOnlyPids.length} 题仅在比赛中</div>`:''}
+            <button id="hm-ai-jump-widget" class="hm-glass-btn" style="margin-bottom:12px; background:linear-gradient(135deg, #8b5cf6, #3b82f6); color:white; border:none; box-shadow:0 6px 20px rgba(139,92,246,0.3);">🎲 AI 懂我 · 智能推题</button>
             <button id="hm-toggle-detail" class="hm-glass-btn" style="margin-bottom:12px">📋 查看本周 AC 明细</button>
             <div id="hm-ac-detail-panel" class="hm-ac-detail" style="display:none"></div>
             <button id="hm-sync" class="hm-glass-btn hm-glass-btn-primary" style="margin-bottom:12px" ${cooling?'disabled':''}>${cooling?`思考中 (${remain}s)`:'全网同步'}</button>
@@ -764,14 +1052,59 @@
             }, 300);
         }
 
+        document.getElementById('hm-ai-jump-widget').onclick = async () => {
+            const btn = document.getElementById('hm-ai-jump-widget');
+            const orig = btn.innerHTML;
+            btn.innerHTML = '⏳ 极速测算...'; btn.style.pointerEvents = 'none';
+            try {
+                const highest = (d.weeklySolvedPids || []).reduce((max, p) => Math.max(max, p.diff || 0), 0);
+                const history = GM_getValue('ai_rec_history', []);
+                const difficultyHint = highest === 0 ? '入门（难度1~2）' : `与难度${highest}相近`;
+                const prompt = `你是一个非常聪明的OI推题机。当前时间戳${Date.now()}，选手最高完成难度${highest}（${difficultyHint}）。
+请推荐一道**随机**的经典洛谷题目，只回复纯题目编号（必须以P开头，如P3371），禁止任何额外文字。
+注意：绝对不要推荐以下已经推荐过的题目：${history.join(',') || '无'}。`;
+                const res = await pureBackgroundAiCall(prompt);
+                const match = res.content.match(/P\d{4,5}/i);
+                if (match) {
+                    const pid = match[0].toUpperCase();
+                    const newHistory = [...history, pid].slice(-20);
+                    GM_setValue('ai_rec_history', newHistory);
+                    window.open('https://www.luogu.com.cn/problem/' + pid, '_blank');
+                } else {
+                    alert('AI 回复格式异常，请重试');
+                }
+            } catch (e) { alert('推题失败：' + e.message); }
+            finally { btn.innerHTML = orig; btn.style.pointerEvents = 'auto'; }
+        };
+
         let detailVisible=false;
         document.getElementById('hm-toggle-detail').onclick=()=>{
             const panel=document.getElementById('hm-ac-detail-panel');
             if(!detailVisible){
-                const allAc=[...d.weeklySolvedPids.map(p=>({platform:'LG',id:p.id,link:`https://www.luogu.com.cn/problem/${p.id}`})),...d.cfWeeklySolvedPids.map(p=>({platform:'CF',id:p.id,link:`https://codeforces.com/problemset/problem/${p.id.slice(0,-1)}/${p.id.slice(-1)}`})),...d.atWeeklySolvedPids.map(p=>({platform:'AT',id:p.id,link:`https://atcoder.jp/contests/${p.id.split('_')[0]}/tasks/${p.id}`}))];
+                const cfLink = (id) => {
+                    const match = id.match(/^(\d+)([A-Z]\d*)$/);
+                    if (match) return `https://codeforces.com/problemset/problem/${match[1]}/${match[2]}`;
+                    return `https://codeforces.com/problemset/problem/${id.slice(0,-1)}/${id.slice(-1)}`;
+                };
+                const atLink = (id) => {
+                    const parts = id.split('_');
+                    if (parts.length >= 2) return `https://atcoder.jp/contests/${parts[0]}/tasks/${id}`;
+                    return `https://atcoder.jp/contests/${id}/tasks/${id}`;
+                };
+                const allAc = [
+                    ...d.weeklySolvedPids.map(p=>({platform:'LG', id:p.id, link:`https://www.luogu.com.cn/problem/${p.id}`, color: getLuoguColor(p.diff)})),
+                    ...d.cfWeeklySolvedPids.map(p=>({platform:'CF', id:p.id, link: cfLink(p.id), color: getCfColor(p.rating)})),
+                    ...d.atWeeklySolvedPids.map(p=>({platform:'AT', id:p.id, link: atLink(p.id), color: getAtColor(p.point)}))
+                ];
                 let html='<div style="display:flex;gap:6px;margin-bottom:10px;padding-top:4px;">';
                 ['全部','LG','CF','AT'].forEach(t=>{html+=`<button class="hm-filter-btn hm-glass-btn" data-filter="${t}" style="padding:4px 12px;font-size:14px;border-radius:12px">${t}</button>`;});
-                html+='</div><div id="hm-ac-list">'+allAc.map(ac=>`<div class="hm-ac-card" data-platform="${ac.platform}"><span style="font-weight:700">${ac.platform}</span><span style="font-size:15px">${ac.id}</span><a href="${ac.link}" target="_blank">打开</a></div>`).join('')+(allAc.length===0?'<div style="text-align:center;opacity:0.6;font-size:15px">暂无记录</div>':'')+'</div>';
+                html+='</div><div id="hm-ac-list">'+allAc.map(ac=>`
+                    <div class="hm-ac-card" data-platform="${ac.platform}" style="border-left: 4px solid ${ac.color}; background: linear-gradient(90deg, ${ac.color}22, rgba(255,255,255,0.05)); border-right: 1px solid rgba(255,255,255,0.1); border-top: 1px solid rgba(255,255,255,0.1); border-bottom: 1px solid rgba(255,255,255,0.1);">
+                        <span style="font-weight:800; color:${ac.color}; width:35px; text-shadow: 0 1px 2px rgba(0,0,0,0.2);">${ac.platform}</span>
+                        <span style="font-size:15px; font-weight:600; flex:1; color:${ac.color};">${ac.id}</span>
+                        <a href="${ac.link}" target="_blank" style="color:var(--hm-text); text-decoration:none; font-weight:700; background:rgba(128,128,128,0.2); padding:4px 12px; border-radius:10px;">打开</a>
+                    </div>`).join('')+(allAc.length===0?'<div style="text-align:center;opacity:0.6;font-size:15px">暂无记录</div>':'')+'</div>';
+
                 panel.innerHTML=html; panel.style.display='block'; detailVisible=true;
                 panel.querySelectorAll('.hm-filter-btn').forEach(b=>b.onclick=()=>{const f=b.dataset.filter; panel.querySelectorAll('.hm-ac-card').forEach(c=>c.style.display=(f==='全部'||c.dataset.platform===f)?'':'none');});
                 setTimeout(()=>adjustMainWidgetSize(),30);
@@ -793,11 +1126,26 @@
             const max=Math.max(...history.map(h=>h.count),1);
             histHtml=history.map(h=>{const pct=(h.count/max*100).toFixed(0); return `<div style="display:flex;align-items:center;margin-bottom:8px"><span style="width:85px;font-size:14px">${h.weekStart}</span><div style="flex:1;height:22px;background:rgba(255,255,255,0.2);border-radius:12px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--hm-blue);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:13px;color:white">${h.count}题</div></div></div>`}).join('');
         } else histHtml='<div style="opacity:0.6;text-align:center;font-size:16px">暂无历史数据</div>';
-        const platforms=[{name:'LG',count:d.weeklySolvedPids?.length||0,color:'#3498db'},{name:'CF',count:d.cfWeeklySolvedPids?.length||0,color:'#e74c3c'},{name:'AT',count:d.atWeeklySolvedPids?.length||0,color:'#2ecc71'}].filter(p=>p.count>0);
-        const total=platforms.reduce((s,p)=>s+p.count,0); let conic='conic-gradient('; let acc=0;
-        platforms.forEach((p,i)=>{const deg=(p.count/total*360).toFixed(1); conic+=`${p.color} ${acc}deg ${acc+parseFloat(deg)}deg`; if(i<platforms.length-1) conic+=', '; acc+=parseFloat(deg);}); conic+=')';
+        const platforms=[
+            {name:'LG',count:d.weeklySolvedPids?.length||0,color:'#3498db'},
+            {name:'CF',count:d.cfWeeklySolvedPids?.length||0,color:'#e74c3c'},
+            {name:'AT',count:d.atWeeklySolvedPids?.length||0,color:'#2ecc71'}
+        ].filter(p=>p.count>0);
+        const total=platforms.reduce((s,p)=>s+p.count,0);
+        let conic='conic-gradient('; let acc=0;
+        platforms.forEach((p,i)=>{
+            const deg = total > 0 ? (p.count/total*360) : 0;
+            conic+=`${p.color} ${acc}deg ${acc+deg}deg`;
+            if(i<platforms.length-1) conic+=', ';
+            acc+=deg;
+        });
+        conic += ')';
+
         getVContent('data').innerHTML=`
-            <div class="hm-text-premium hm-view-title">📈 我的数据</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div class="hm-text-premium hm-view-title" style="margin-bottom:0;">📈 我的数据</div>
+                <button id="hm-ai-data-btn" class="hm-glass-btn" style="width:auto; padding:6px 14px; font-size:14px; background:linear-gradient(135deg, #0f766e, #3b82f6); color:white; border:none; box-shadow:0 4px 12px rgba(15,118,110,0.3);">🤖 AI 深度诊断</button>
+            </div>
             <div style="display:flex;gap:30px">
                 <div style="flex:1"><h4 style="font-size:18px;margin:10px 0">📊 历史周题数</h4>${histHtml}</div>
                 <div style="flex:1"><h4 style="font-size:18px;margin:10px 0">🍩 本周平台分布</h4>
@@ -806,6 +1154,20 @@
             </div>
             <button id="hm-back-from-data" class="hm-glass-btn" style="margin-top:20px">↩️ 返回</button>
         `;
+
+        document.getElementById('hm-ai-data-btn').onclick = async () => {
+            const btn = document.getElementById('hm-ai-data-btn');
+            const orig = btn.innerHTML; btn.innerHTML = '⏳ 深度演算中...'; btn.style.pointerEvents = 'none';
+            try {
+                const histTxt = history.length ? history.map(h => `${h.weekStart}: ${h.count}题`).join(', ') : '暂无';
+                const platTxt = platforms.length ? platforms.map(p => `${p.name}: ${p.count}题`).join(', ') : '暂无';
+                const prompt = `你是一位极其敏锐且专业的金牌OI教练。以下是该选手近期的真实训练数据：\n【近期每周刷题数】：${histTxt}\n【本周平台分布】：${platTxt}\n请你：1. 一句话直击痛点诊断目前的训练状态。2. 指出可能存在的问题。3. 给出后续具体的提升建议。最后给予强烈的情绪价值！语言排版要清晰美观。`;
+                const res = await pureBackgroundAiCall(prompt);
+                showAiResultModal('data', res.content, res.engine);
+            } catch(e) { alert('AI 诊断失败：' + e.message); }
+            finally { btn.innerHTML = orig; btn.style.pointerEvents = 'auto'; }
+        };
+
         document.getElementById('hm-back-from-data').onclick=()=>transitionTo('main');
     }
 
@@ -813,9 +1175,19 @@
         const d = GM_getValue(dbKey)||{dailyRecords:{}}; const prefs=loadUIPrefs();
         const today=new Date().toISOString().slice(0,10); const todayCount=d.dailyRecords?.[today]||0; const stats=evaluateStats(d,prefs);
         let streak=0; for(let i=0;i<365;i++){const day=new Date(Date.now()-i*86400000).toISOString().slice(0,10); if(d.dailyRecords?.[day]&&d.dailyRecords[day]>0) streak++; else break;}
-        const highest=()=>{let max={diff:0,id:''}; d.weeklySolvedPids?.forEach(p=>{if((p.diff||0)>max.diff)max={diff:p.diff,id:p.id}}); return max.id?`${max.id} (${max.diff})`:'无';};
+        const highest = () => {
+            let maxDiff = 0, maxId = '';
+            d.weeklySolvedPids?.forEach(p => { if((p.diff||0) > maxDiff) { maxDiff = p.diff; maxId = p.id; } });
+            d.cfWeeklySolvedPids?.forEach(p => { if((p.rating||0) > maxDiff) { maxDiff = p.rating; maxId = p.id; } });
+            d.atWeeklySolvedPids?.forEach(p => { if((p.point||0) > maxDiff) { maxDiff = p.point; maxId = p.id; } });
+            return maxId ? `${maxId} (${maxDiff})` : '无';
+        };
+
         getVContent('report').innerHTML=`
-            <div class="hm-text-premium hm-view-title">📋 今日报告</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div class="hm-text-premium hm-view-title" style="margin-bottom:0;">📋 今日报告</div>
+                <button id="hm-ai-report-btn" class="hm-glass-btn" style="width:auto; padding:6px 14px; font-size:14px; background:linear-gradient(135deg, #ea580c, #eab308); color:white; border:none; box-shadow:0 4px 12px rgba(234,88,12,0.3);">🤖 召唤教练点评</button>
+            </div>
             <div style="display:flex;align-items:center;gap:30px">
                 <div style="text-align:center;flex:1"><div style="font-size:54px">${todayCount>0?'✅':'🌙'}</div><div style="font-size:20px;font-weight:800;margin-top:10px">今日 AC ${todayCount} 题</div><div style="opacity:0.5;font-size:14px;margin-top:6px">${today}</div></div>
                 <div style="flex:2;background:rgba(255,255,255,0.15);border-radius:20px;padding:16px;font-size:16px">
@@ -825,6 +1197,18 @@
             </div>
             <button id="hm-back-from-report" class="hm-glass-btn" style="margin-top:20px">↩️ 返回</button>
         `;
+
+        document.getElementById('hm-ai-report-btn').onclick = async () => {
+            const btn = document.getElementById('hm-ai-report-btn');
+            const orig = btn.innerHTML; btn.innerHTML = '⏳ 教练沉思中...'; btn.style.pointerEvents = 'none';
+            try {
+                const prompt = `你是充满情绪价值且极懂心理学的金牌OI教练。你的学生今天完成了 ${todayCount} 题，连续打卡 ${streak} 天，今日解决的最高难度是 ${highest()}。请针对他今天的表现给出简短精悍、极具感染力的点评：1. 如果他做得很棒，疯狂夸奖他！2. 如果他今天做的少或者挂零，温柔地共情他。3. 最后给出一句燃爆明天的寄语！字数在150字左右。`;
+                const res = await pureBackgroundAiCall(prompt);
+                showAiResultModal('report', res.content, res.engine);
+            } catch(e) { alert('呼叫教练失败：' + e.message); }
+            finally { btn.innerHTML = orig; btn.style.pointerEvents = 'auto'; }
+        };
+
         document.getElementById('hm-back-from-report').onclick=()=>transitionTo('main');
     }
 
@@ -842,62 +1226,84 @@
         getVContent('settings').innerHTML = `
             <div class="hm-text-premium hm-view-title">⚙️ 设置</div>
             <div class="hm-settings-group">
-                ${settingItem('你的昵称', '显示在卡片上', `<input id="s-name" class="hm-input" value="${c.name}">`)}
+                ${settingItem('你的昵称', '', `<input id="s-name" class="hm-input" value="${c.name}">`)}
                 ${settingItem('征程启航日', '每周从这一天开始统计', `<div class="hm-segment" id="week-segment">${["日","一","二","三","四","五","六"].map((d,i)=>`<button class="hm-segment-btn ${i===c.d?'active':''}" data-index="${i}">${d}</button>`).join('')}</div>`)}
-                ${settingItem('启航时间 (支持滚轮微调)', '精确到分钟', `<div style="display:flex;align-items:center;justify-content:center;gap:20px;background:rgba(255,255,255,var(--hm-glass-alpha));padding:12px;border-radius:20px;border:1px solid var(--hm-border)"><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><button id="hm-time-h-up" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▲</button><span id="hm-time-h-val" style="font-size:28px;font-weight:800;cursor:pointer">${String(curH).padStart(2,'0')}</span><button id="hm-time-h-dn" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▼</button></div><span style="font-size:28px;opacity:0.4">:</span><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><button id="hm-time-m-up" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▲</button><span id="hm-time-m-val" style="font-size:28px;font-weight:800;cursor:pointer">${String(curM).padStart(2,'0')}</span><button id="hm-time-m-dn" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▼</button></div></div>`)}
+                ${settingItem('启航时间', '', `<div style="display:flex;align-items:center;justify-content:center;gap:20px;background:rgba(255,255,255,var(--hm-glass-alpha));padding:12px;border-radius:20px;border:1px solid var(--hm-border)"><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><button id="hm-time-h-up" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▲</button><span id="hm-time-h-val" style="font-size:28px;font-weight:800;">${String(curH).padStart(2,'0')}</span><button id="hm-time-h-dn" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▼</button></div><span style="font-size:28px;opacity:0.4">:</span><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><button id="hm-time-m-up" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▲</button><span id="hm-time-m-val" style="font-size:28px;font-weight:800;">${String(curM).padStart(2,'0')}</span><button id="hm-time-m-dn" class="hm-glass-btn" style="padding:4px 20px;font-size:14px">▼</button></div></div>`)}
             </div>
             <div class="hm-settings-group">
-                ${settingItem('Luogu UID', '自动检测，也可手动填写', `<input id="s-lg" class="hm-input" value="${c.lg||''}">`)}
-                ${settingItem('Codeforces 账号', '填写你的 CF 用户名', `<input id="s-cf" class="hm-input" value="${c.cf||''}">`)}
-                ${settingItem('AtCoder 账号', '填写你的 AtCoder 用户名', `<input id="s-at" class="hm-input" value="${c.at||''}">`)}
+                ${settingItem('Luogu UID', '', `<input id="s-lg" class="hm-input" value="${c.lg||''}">`)}
+                ${settingItem('Codeforces 账号', '', `<input id="s-cf" class="hm-input" value="${c.cf||''}">`)}
+                ${settingItem('AtCoder 账号', '', `<input id="s-at" class="hm-input" value="${c.at||''}">`)}
+                ${settingItem('UVA 账号 (数字ID)', '', `<input id="s-uva" class="hm-input" value="${c.uvaUid||''}">`)}
             </div>
             <div class="hm-settings-group">
-                ${settingItem('达标判定', '选择目标判定规则', `<div class="hm-segment" id="goal-mode-segment">${[{val:'count',txt:'仅题数'},{val:'score',txt:'仅分数'},{val:'both',txt:'全达标'},{val:'either',txt:'任一达标'}].map(o=>`<button class="hm-segment-btn ${prefs.goalMode===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
-                ${settingItem('每周题数目标', '目标 AC 总数', `<input id="s-goal-count" type="number" class="hm-input" value="${d.weeklyGoalCount||10}">`)}
-                ${settingItem('每周分数目标', '目标总得分', `<input id="s-goal-score" type="number" class="hm-input" value="${d.weeklyGoalScore||50}">`)}
+                <label class="hm-label">⚖️ 平台得分与换算设置</label>
+                <span class="hm-hint" style="margin-bottom:12px;">自由定制难度权值和最低得分门槛</span>
+                ${settingItem('洛谷难度权值', '8个数字逗号分隔', `<input id="s-lg-w" class="hm-input" value="${prefs.lg_w.join(',')}">`)}
+                <div style="display:flex;gap:10px;">
+                    <div style="flex:1">${settingItem('CF Rating 分母', 'Rating/X', `<input id="s-cf-w" type="number" class="hm-input" value="${prefs.cf_w}">`)}</div>
+                    <div style="flex:1">${settingItem('AT Point 分母', 'Point/X', `<input id="s-at-w" type="number" class="hm-input" value="${prefs.at_w}">`)}</div>
+                </div>
+                <div style="display:flex;gap:10px;margin-top:8px;">
+                    <div style="flex:1">${settingItem('最低计分难度(LG)', '', `<input id="s-lg-min" type="number" class="hm-input" value="${prefs.lgMinDiff}">`)}</div>
+                    <div style="flex:1">${settingItem('最低计分 Rating', '', `<input id="s-cf-min" type="number" class="hm-input" value="${prefs.cfMinRating}">`)}</div>
+                    <div style="flex:1">${settingItem('最低计分 Point', '', `<input id="s-at-min" type="number" class="hm-input" value="${prefs.atMinPoint}">`)}</div>
+                </div>
+            </div>
+            <div class="hm-settings-group">
+                ${settingItem('达标判定', '', `<div class="hm-segment" id="goal-mode-segment">${[{val:'count',txt:'仅题数'},{val:'score',txt:'仅分数'},{val:'both',txt:'全达标'},{val:'either',txt:'任一达标'}].map(o=>`<button class="hm-segment-btn ${prefs.goalMode===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
+                ${settingItem('每周题数目标', '', `<input id="s-goal-count" type="number" class="hm-input" value="${d.weeklyGoalCount||10}">`)}
+                ${settingItem('每周分数目标', '', `<input id="s-goal-score" type="number" class="hm-input" value="${d.weeklyGoalScore||50}">`)}
             </div>
             <div class="hm-settings-group">
                 <label class="hm-label">🎨 外观</label>
                 <div class="hm-switch-row"><span>高级液态玻璃</span><label class="hm-switch"><input type="checkbox" id="ui-glass" ${prefs.liquidGlass?'checked':''}><span class="hm-slider-toggle"></span></label></div>
-                <div class="hm-switch-row"><span>启用拖拽物理引擎</span><label class="hm-switch"><input type="checkbox" id="ui-physics" ${prefs.physicsEnabled?'checked':''}><span class="hm-slider-toggle"></span></label></div>
-                <div class="hm-switch-row"><span>边缘吸附自动隐藏</span><label class="hm-switch"><input type="checkbox" id="ui-edge-hide" ${prefs.edgeHideEnabled?'checked':''}><span class="hm-slider-toggle"></span></label></div>
+                <div class="hm-switch-row"><span>拖拽物理引擎</span><label class="hm-switch"><input type="checkbox" id="ui-physics" ${prefs.physicsEnabled?'checked':''}><span class="hm-slider-toggle"></span></label></div>
+                <div class="hm-switch-row"><span>边缘吸附隐藏</span><label class="hm-switch"><input type="checkbox" id="ui-edge-hide" ${prefs.edgeHideEnabled?'checked':''}><span class="hm-slider-toggle"></span></label></div>
                 ${settingItem('深色模式', '', `<div class="hm-segment" id="dark-mode-segment">${[{val:'light',txt:'浅色'},{val:'dark',txt:'深色'},{val:'auto',txt:'跟随系统'}].map(o=>`<button class="hm-segment-btn ${prefs.darkMode===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
-                ${settingItem('悬浮球图标', 'Emoji或图片链接', `<input id="ui-icon" class="hm-input" value="${prefs.icon}">`)}
+                ${settingItem('悬浮球图标', '', `<input id="ui-icon" class="hm-input" value="${prefs.icon}">`)}
                 ${settingItem('默认视图', '', `<div class="hm-segment" id="default-view-segment">${[{val:'main',txt:'主面板'},{val:'data',txt:'数据'},{val:'report',txt:'报告'}].map(o=>`<button class="hm-segment-btn ${prefs.defaultView===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
-                ${settingItem('双击附加动作', '双击悬浮球必定会展开界面，同时可附加以下操作', `<div class="hm-segment" id="dblclick-segment">${[{val:'none',txt:'无'},{val:'sync',txt:'触发全网同步'}].map(o=>`<button class="hm-segment-btn ${(prefs.ballDoubleClick==='sync' && o.val==='sync') || (prefs.ballDoubleClick!=='sync' && o.val==='none')?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
+                ${settingItem('双击动作', '', `<div class="hm-segment" id="dblclick-segment">${[{val:'none',txt:'无'},{val:'sync',txt:'全网同步'}].map(o=>`<button class="hm-segment-btn ${(prefs.ballDoubleClick==='sync' && o.val==='sync') || (prefs.ballDoubleClick!=='sync' && o.val==='none')?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
             </div>
             <div class="hm-settings-group">
-                <label class="hm-label">🧠 AI 引擎独立设置 (混合调度)</label>
-                <span class="hm-hint" style="margin-bottom:16px;">选择 DeepSeek 或 Gemini 会自动唤起网页版，无须 API Key。选择“内置免费”则全程后台无感。</span>
-                ${settingItem('🤖 AI 教我偏好', '', `<div class="hm-segment" id="ai-teach-segment">${[{val:'builtin',txt:'内置免费'},{val:'deepseek',txt:'DeepSeek'},{val:'gemini',txt:'Gemini'},{val:'ask',txt:'每次询问'}].map(o=>`<button class="hm-segment-btn ${prefs.aiTeachEngine===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
-                ${settingItem('✨ 简化题意偏好', '', `<div class="hm-segment" id="ai-simplify-segment">${[{val:'builtin',txt:'内置免费'},{val:'deepseek',txt:'DeepSeek'},{val:'gemini',txt:'Gemini'},{val:'ask',txt:'每次询问'}].map(o=>`<button class="hm-segment-btn ${prefs.aiSimplifyEngine===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
+                <label class="hm-label">🧠 AI 引擎</label>
+                ${settingItem('AI 教我偏好', '', `<div class="hm-segment" id="ai-teach-segment">${[{val:'builtin',txt:'内置极速'},{val:'deepseek',txt:'DeepSeek'},{val:'gemini',txt:'Gemini'},{val:'ask',txt:'每次询问'}].map(o=>`<button class="hm-segment-btn ${prefs.aiTeachEngine===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
+                ${settingItem('简化题意偏好', '', `<div class="hm-segment" id="ai-simplify-segment">${[{val:'builtin',txt:'内置极速'},{val:'deepseek',txt:'DeepSeek'},{val:'gemini',txt:'Gemini'},{val:'ask',txt:'每次询问'}].map(o=>`<button class="hm-segment-btn ${prefs.aiSimplifyEngine===o.val?'active':''}" data-value="${o.val}">${o.txt}</button>`).join('')}</div>`)}
             </div>
             <div style="display:flex;gap:12px"><button id="s-save" class="hm-glass-btn hm-glass-btn-primary" style="flex:2">💾 保存刷新</button><button id="s-back" class="hm-glass-btn" style="flex:1">❌ 取消</button></div>
         `;
-        getVContent('settings').addEventListener('click', (e) => {
+
+        const settingsContent = getVContent('settings');
+        settingsContent.onclick = (e) => {
             const btn = e.target.closest('.hm-segment-btn'); if (!btn) return;
             const seg = btn.closest('.hm-segment'); if (!seg) return;
             seg.querySelectorAll('.hm-segment-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active');
-        });
+        };
         const updateTime = () => { document.getElementById('hm-time-h-val').innerText = String(curH).padStart(2,'0'); document.getElementById('hm-time-m-val').innerText = String(curM).padStart(2,'0'); };
         document.getElementById('hm-time-h-up').onclick = () => { curH = (curH+1)%24; updateTime(); };
         document.getElementById('hm-time-h-dn').onclick = () => { curH = (curH-1+24)%24; updateTime(); };
         document.getElementById('hm-time-m-up').onclick = () => { curM = (curM+1)%60; updateTime(); };
         document.getElementById('hm-time-m-dn').onclick = () => { curM = (curM-1+60)%60; updateTime(); };
-        const handleTimeScroll = (el, type) => {
-            el.addEventListener('wheel', (e) => {
+
+        const bindScroll = (el, type) => {
+            const handler = (e) => {
                 e.preventDefault();
                 if (e.deltaY > 0) { if (type === 'h') curH = (curH - 1 + 24) % 24; else curM = (curM - 1 + 60) % 60; }
                 else { if (type === 'h') curH = (curH + 1) % 24; else curM = (curM + 1) % 60; }
                 updateTime();
-            }, { passive: false });
+            };
+            el.removeEventListener('wheel', el._wheelHandler);
+            el._wheelHandler = handler;
+            el.addEventListener('wheel', handler, { passive: false });
         };
-        handleTimeScroll(document.getElementById('hm-time-h-val'), 'h');
-        handleTimeScroll(document.getElementById('hm-time-m-val'), 'm');
+        bindScroll(document.getElementById('hm-time-h-val'), 'h');
+        bindScroll(document.getElementById('hm-time-m-val'), 'm');
 
         document.getElementById('s-save').onclick = () => {
+            const parsedLgw = document.getElementById('s-lg-w').value.split(',').map(n => parseFloat(n)||1);
             const newConfig = { ...c, name: document.getElementById('s-name').value.trim()||'OIer', d: parseInt(document.querySelector('#week-segment .active')?.dataset.index||c.d), h: curH, m: curM,
                 lg: document.getElementById('s-lg').value.trim(), cf: document.getElementById('s-cf').value.trim(), at: document.getElementById('s-at').value.trim(),
+                uvaUid: document.getElementById('s-uva').value.trim(),
                 weeklyGoalCount: parseInt(document.getElementById('s-goal-count').value)||10, weeklyGoalScore: parseInt(document.getElementById('s-goal-score').value)||50,
                 goalMode: document.querySelector('#goal-mode-segment .active')?.dataset.value||'count' };
             GM_setValue('yu_config', newConfig);
@@ -906,7 +1312,13 @@
                 darkMode: document.querySelector('#dark-mode-segment .active')?.dataset.value || 'auto', icon: document.getElementById('ui-icon').value.trim() || '🎯',
                 defaultView: document.querySelector('#default-view-segment .active')?.dataset.value || 'main', ballDoubleClick: document.querySelector('#dblclick-segment .active')?.dataset.value || 'none',
                 aiTeachEngine: document.querySelector('#ai-teach-segment .active')?.dataset.value || 'builtin',
-                aiSimplifyEngine: document.querySelector('#ai-simplify-segment .active')?.dataset.value || 'builtin'
+                aiSimplifyEngine: document.querySelector('#ai-simplify-segment .active')?.dataset.value || 'builtin',
+                lg_w: parsedLgw.length === 8 ? parsedLgw : DEFAULT_UI_PREFS.lg_w,
+                cf_w: parseFloat(document.getElementById('s-cf-w').value) || DEFAULT_UI_PREFS.cf_w,
+                at_w: parseFloat(document.getElementById('s-at-w').value) || DEFAULT_UI_PREFS.at_w,
+                lgMinDiff: parseInt(document.getElementById('s-lg-min').value) || 0,
+                cfMinRating: parseInt(document.getElementById('s-cf-min').value) || 0,
+                atMinPoint: parseInt(document.getElementById('s-at-min').value) || 0
             };
             GM_setValue(UI_PREFS_KEY, newPrefs); currentUIPrefs = loadUIPrefs(); refreshDynamicStyles();
             d.weeklyGoalCount = newConfig.weeklyGoalCount; d.weeklyGoalScore = newConfig.weeklyGoalScore;
@@ -916,6 +1328,7 @@
         document.getElementById('s-back').onclick = () => transitionTo('main');
     }
 
+    // ===================== 拖拽与交互 =====================
     let isDragging = false, dragMoved = false, dragAnimId = null;
     let pointerX, pointerY, offsetX, offsetY, startX, startY;
     let curL, curT;
@@ -980,16 +1393,19 @@
 
         if (clickTimer) {
             clearTimeout(clickTimer); clickTimer = null;
-            // 【核心修复】：双击一定会打开界面！如果配置了同步，则在后台同步。
-            const action = currentUIPrefs.ballDoubleClick || 'none';
-            if (action === 'sync') startIncrementalTrace(dbKey, false);
-            transitionTo(currentUIPrefs.defaultView || 'main');
         } else {
             clickTimer = setTimeout(() => {
                 clickTimer = null;
                 transitionTo(currentUIPrefs.defaultView || 'main');
             }, 250);
         }
+    });
+    widget.addEventListener('dblclick', () => {
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = null;
+        const action = currentUIPrefs.ballDoubleClick || 'none';
+        if (action === 'sync') startIncrementalTrace(dbKey, false);
+        transitionTo(currentUIPrefs.defaultView || 'main');
     });
 
     let resizeTimer = null;
@@ -1009,7 +1425,7 @@
     let d = GM_getValue(dbKey);
     if (!d || Date.now() >= (d.nextResetTime||0)) {
         archiveWeeklyData();
-        d = { weeklyGoalCount:10, weeklyGoalScore:50, nextResetTime: getBoundaries().next, lastSync:0, weeklySolvedPids:[], cfWeeklySolvedPids:[], atWeeklySolvedPids:[], dailyRecords:{} };
+        d = { weeklyGoalCount:10, weeklyGoalScore:50, nextResetTime: getBoundaries().next, lastSync:0, weeklySolvedPids:[], cfWeeklySolvedPids:[], atWeeklySolvedPids:[], uvaWeeklySolvedPids:[], lcWeeklySolvedPids:[], dailyRecords:{} };
         GM_setValue(dbKey, d);
     }
     widget.style.opacity='1'; widget.style.pointerEvents='auto';
