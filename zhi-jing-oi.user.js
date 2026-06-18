@@ -4,7 +4,7 @@
 // @namespace    http://yu666.luogu.goal
 // @version      5.6.2
 // @description  致境·OI
-// @author       yu_666
+// @author       yu-888-max && DeepSeek && Gemini
 // @match        *://*.luogu.com.cn/*
 // @match        *://*.luogu.com/*
 // @match        *://*.codeforces.com/*
